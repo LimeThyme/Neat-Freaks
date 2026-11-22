@@ -1,9 +1,9 @@
 # Selection versus processing
 
 Race/gender still select relevant vanilla archives before file enumeration:
-clothing female 235-238/male 239-242; armor female 245-248/male 249-252;
-weapons female 233/male 234; artifacts female 433/male 432. DFU body morphology
-chooses offsets: Argonian 0, elves 1, humans 2, Khajiit 3. Unknown profiles fail
+`clothing female 235-238/male 239-242`; `armor female 245-248/male 249-252`;
+`weapons female 233/male 234`; `artifacts female 433/male 432`. DFU body morphology
+chooses offsets: `Argonian 0`, `elves 1`, `humans 2`, `Khajiit 3`. Unknown profiles fail
 closed. Folder labels are descriptive and never determine the character profile.
 
 These numbers determine what to register, not how to process its pixels. Schema 3
