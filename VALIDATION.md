@@ -1,7 +1,7 @@
 # Validation - 0.1.6
 
-Production compiles with warnings as errors against installed DFU 1.1.1, Unity
-2019.4.41f2 and Harmony 2.4.2.0. All 43 offline scenarios and 8,264,675 assertions
+Production compiles with warnings as errors against installed `DFU 1.1.1`, `Unity
+2019.4.41f2` and `Harmony 2.4.2.0`. All 43 offline scenarios and 8,264,675 assertions
 passed. Many assertions compare individual pixels rather than distinct use cases.
 
 Schema checks cover booleans and quoted mixed casing, invalid values, selected
