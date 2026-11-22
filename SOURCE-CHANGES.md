@@ -1,11 +1,11 @@
 # Engineering rationale - 0.1.5 to 0.1.6
 
-The latest game log confirmed schema 3 worked, but mode=auto exposed an old internal
+The latest game log confirmed schema 3 worked, but `mode=auto` exposed an old internal
 label. Readers could reasonably think schema 2 remained active. This release changes
-the explanation, not the processing rules: logs use the same field names as pack.json.
+the explanation, not the processing rules: logs use the same field names as `pack.json`.
 
-Archive and image diagnostics now show auto-indexing enabled=true/false and
-palette-processing type=clothing/equipment. They separately explain the source:
+Archive and image diagnostics now show `auto-indexing enabled=true/false` and
+`palette-processing type=clothing/equipment`. They separately explain the source:
 auto-indexed DFU palette, existing DFU palette indexes preserved, or PNG colours
 unchanged with native processing bypassed. Settings describe intent; the source
 and native-stage lines describe what actually happened. This distinction matters
