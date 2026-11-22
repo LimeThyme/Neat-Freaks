@@ -1,6 +1,7 @@
 # Build and migrate to 0.1.6
 
-Use DFU 1.1.1 and Unity 2019.4.41f2. This is a source kit, not an exported mod.
+Use DFU 1.1.1 and Unity 2019.4.41f2. This is a source kit, with exported mods under [Builds/](Builds/).
+Choose the correct build for your operating system.
 Offline compilation verifies code but cannot replace Mod Builder's platform export.
 
 ## Import
@@ -18,8 +19,8 @@ to:
 [Your Daggerfall Unity Source Directory]\Assets\Untracked\ModBuilder\Neat Freaks - 0.1.6 - Source
 ```
 
-Import only that Unity subtree. Keep Tools, DeveloperTests, ValidationRecords and
-documentation outside Assets. The standalone artwork is installed separately.
+Import only that Unity subtree. Keep `Tools`, `DeveloperTests`, `ValidationRecords` and
+documentation outside `Assets`. The standalone artwork is installed separately.
 No helper script auto-launches/closes Unity or modifies installed game files.
 
 ## References and export
@@ -71,7 +72,7 @@ scan count.
 
 ## Pack migration before testing
 
-0.1.6 accepts only schema 3. Follow PNG-PACKS.md; Keep your PNG collection and use
+0.1.6 accepts only schema 3. Follow [PNG-PACKS.md](PNG-PACKS.md); Keep your PNG collection and use
 the supplied labelled/numeric examples as a guide. The README beside pack.json
 is excluded from Unity build inputs and is for pack makers.
 Installed files have not been changed by this build task.
@@ -83,4 +84,4 @@ manifest does. They distinguish converted indexes, preserved indexes and unchang
 PNG colours so an expected bypass is not mistaken for a failed conversion. Native
 target/stage lines describe actual work; archive registration only records intent.
 This is a wording update: schema 3, processing and caching behavior are unchanged.
-See DEBUG-LOGGING.md for examples and SOURCE-CHANGES.md for the engineering rationale.
+See [DEBUG-LOGGING.md](DEBUG-LOGGING.md) for examples and [SOURCE-CHANGES.md](SOURCE-CHANGES.md) for the engineering rationale.
