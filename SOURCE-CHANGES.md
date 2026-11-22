@@ -24,7 +24,7 @@ is intentional and still explains how to migrate.
 All nine source files were reviewed. Comments retain concise reasons for palette
 identity, source immutability, native target selection, path checks, lifecycle and
 Harmony ownership. Stale clothing-only wording and indexed-mode error terminology
-were corrected. Detailed release history belongs here and in CHANGELOG.md, not in
+were corrected. Detailed release history belongs here and in [CHANGELOG.md](CHANGELOG.md), not in
 long inline narratives. Existing rationale that remains accurate was retained.
 
 Native processing, cache keys, conversion, folder selection, schema validation and
