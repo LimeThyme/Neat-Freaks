@@ -1,0 +1,24 @@
+{
+  "Version": "1",
+  "Sections": [
+    {
+      "Name": "Options",
+      "Description": "",
+      "IsAdvanced": false,
+      "Keys": [
+        {
+          "$type": "DaggerfallWorkshop.Game.Utility.ModSupport.ModSettings.ToggleKey",
+          "Name": "Enable Mod Logging",
+          "Description": "Creates NF.log and NF-prev.log in the loaded mod directory under 'Logs/NeatFreaks'. Used for diagnosing issues with the mod.",
+          "Value": false
+        },
+        {
+          "$type": "DaggerfallWorkshop.Game.Utility.ModSupport.ModSettings.ToggleKey",
+          "Name": "Verbose Logging",
+          "Description": "Adds individual archive, PNG, dye and timing details. Requires Enable Mod Logging. Leave off for concise event summaries.",
+          "Value": false
+        }
+      ]
+    }
+  ]
+}

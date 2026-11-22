@@ -1,0 +1,1 @@
+PASS: package inventory; 11 build inputs; 48 checksummed files; no bundled binaries

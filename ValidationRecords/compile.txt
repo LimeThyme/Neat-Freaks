@@ -1,0 +1,1 @@
+PASS: all production source compiled against installed DFU, Unity, FullSerializer and Harmony assemblies.

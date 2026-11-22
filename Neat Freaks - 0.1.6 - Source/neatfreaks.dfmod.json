@@ -1,0 +1,28 @@
+{
+  "ModTitle": "Neat Freaks",
+  "ModVersion": "0.1.6",
+  "ModAuthor": "Clerical Error; development assistance by Codex",
+  "DFUnity_Version": "1.1.1",
+  "ModDescription": "Inventory PNG replacements with native clothing/equipment palette processing, artifact mask removal, shared slot fitting and optional normal/verbose logs. AI-assisted code.",
+  "GUID": "39513e40-fde7-47c4-9ec1-d88c9c3f4380",
+  "Files": [
+    "Assets/Untracked/ModBuilder/Neat Freaks - 0.1.6/Source/Bootstrap.cs",
+    "Assets/Untracked/ModBuilder/Neat Freaks - 0.1.6/Source/InventoryPatch.cs",
+    "Assets/Untracked/ModBuilder/Neat Freaks - 0.1.6/Source/Icons.cs",
+    "Assets/Untracked/ModBuilder/Neat Freaks - 0.1.6/Source/IconLibrary.cs",
+    "Assets/Untracked/ModBuilder/Neat Freaks - 0.1.6/Source/PngIcon.cs",
+    "Assets/Untracked/ModBuilder/Neat Freaks - 0.1.6/Source/NeatFreaksLog.cs",
+    "Assets/Untracked/ModBuilder/Neat Freaks - 0.1.6/modsettings.json",
+    "Assets/Untracked/ModBuilder/Neat Freaks - 0.1.6/neatfreaks.dfmod.json",
+    "Assets/Untracked/ModBuilder/Neat Freaks - 0.1.6/Source/IconLayout.cs",
+    "Assets/Untracked/ModBuilder/Neat Freaks - 0.1.6/Source/AutoIndexer.cs",
+    "Assets/Untracked/ModBuilder/Neat Freaks - 0.1.6/Source/ArchiveSelection.cs"
+  ],
+  "Dependencies": [
+    {
+      "Name": "daggerfall.harmony",
+      "IsOptional": false,
+      "IsPeer": false
+    }
+  ]
+}

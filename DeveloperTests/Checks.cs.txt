@@ -1,0 +1,695 @@
+using System;
+using DaggerfallWorkshop.Game.Entity;
+using System.IO;
+using System.IO.Compression;
+using System.Linq;
+using System.Collections.Generic;
+using DaggerfallConnect;
+using DaggerfallWorkshop;
+using DaggerfallWorkshop.Game.Items;
+using DaggerfallWorkshop.Utility;
+using HarmonyLib;
+using NeatFreaks;
+
+// Uses the production library and real DFU/FullSerializer/Harmony assemblies.
+// Only the texture renderer is injected; no Unity native graphics calls are made.
+public static class Checks
+{
+    static int assertions, scenarios;
+    // Reading a live writer on Windows requires sharing its existing write access.
+    static string ReadLog(string path)
+    {
+        using(var stream=new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.ReadWrite))
+        using(var reader=new StreamReader(stream))return reader.ReadToEnd();
+    }
+    static DFPalette palette;
+    static byte[] paletteRGB;
+    static string fixtures;
+    static byte[] sample;
+    static void Assert(bool value, string message) { assertions++; if (!value) throw new Exception(message); }
+    static void Test(string name, Action test) { test(); scenarios++; Console.WriteLine("PASS: " + name); }
+    static void Reject(Action test) { bool rejected = false; try { test(); } catch (InvalidDataException) { rejected = true; } Assert(rejected, "Expected invalid data rejection"); }
+    static bool LegacyEquipmentArchive(int a) { return a==233||a==234||a==432||a==433||(a>=245&&a<=252); }
+    static string Archive(string folder="235", string mode="indexed")
+    {
+        int archive;int.TryParse(folder.Split('-')[0],out archive);
+        return "{\"folder\":\""+folder+"\",\"auto-indexing enabled\":"+(mode=="auto"?"true":"false")+",\"palette-processing type\":\""+(LegacyEquipmentArchive(archive)?"equipment":"clothing")+"\"}";
+    }
+    static string Manifest(params string[] entries) { return "{\"schemaVersion\":3,\"archives\":["+string.Join(",",entries)+"]}"; }
+    // Build schema 3 fixtures from installed folders without editing the user's pack.
+    static string InstalledManifest(string dir)
+    { return Manifest(Directory.GetDirectories(dir).Select(d=>Archive(Path.GetFileName(d),"auto")).ToArray()); }
+    static string Pack(string name, params string[] archives)
+    {
+        string dir=Path.Combine(fixtures,name);Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir,"pack.json"),Manifest(archives));return dir;
+    }
+    static void Png(string pack,string relative,byte[] data=null)
+    {
+        string path=Path.Combine(pack,relative);Directory.CreateDirectory(Path.GetDirectoryName(path));
+        File.WriteAllBytes(path,data??sample);
+    }
+    static IconLibrary<int> Library(List<string> logs, Action release = null, Func<PngIcon, DyeColors, int> render = null)
+    { return new IconLibrary<int>(palette, render ?? ((p,d) => 42), x => { if (release != null) release(); }, logs.Add); }
+
+    static void BE(Stream stream, uint value) { for (int i = 3; i >= 0; i--) stream.WriteByte((byte)(value >> (i * 8))); }
+    static void Chunk(Stream stream, string name, byte[] data)
+    {
+        byte[] type = System.Text.Encoding.ASCII.GetBytes(name);
+        BE(stream, (uint)data.Length); stream.Write(type, 0, 4); stream.Write(data, 0, data.Length);
+        uint crc = 0xffffffff;
+        foreach (byte b in type.Concat(data)) { crc ^= b; for (int i = 0; i < 8; i++) crc = (crc >> 1) ^ ((crc & 1) != 0 ? 0xedb88320u : 0); }
+        BE(stream, ~crc);
+    }
+    static int Paeth(int a, int b, int c) { int p=a+b-c,pa=Math.Abs(p-a),pb=Math.Abs(p-b),pc=Math.Abs(p-c); return pa<=pb&&pa<=pc?a:pb<=pc?b:c; }
+    static byte[] MakePng(byte[] pixels, int width, int height, int type, int filter = 0, byte[] colours = null,
+        byte[] alpha = null, int depth = 8, int interlace = 0, bool badAdler = false, bool extraInflated = false, bool split = false)
+    {
+        int bpp = type == 3 ? 1 : type == 2 ? 3 : 4, stride=width*bpp;
+        var raw = new MemoryStream();
+        for (int y=0;y<height;y++) {
+            raw.WriteByte((byte)filter);
+            for (int x=0;x<stride;x++) {
+                int p=y*stride+x,a=x>=bpp?pixels[p-bpp]:0,b=y>0?pixels[p-stride]:0,c=x>=bpp&&y>0?pixels[p-stride-bpp]:0;
+                int predictor=filter==1?a:filter==2?b:filter==3?(a+b)/2:filter==4?Paeth(a,b,c):0;
+                raw.WriteByte(unchecked((byte)(pixels[p]-predictor)));
+            }
+        }
+        if (extraInflated) raw.WriteByte(0);
+        byte[] input=raw.ToArray(), z;
+        using(var compressed=new MemoryStream()) {
+            compressed.WriteByte(0x78);compressed.WriteByte(0x9c);
+            using(var deflate=new DeflateStream(compressed,CompressionMode.Compress,true)) deflate.Write(input,0,input.Length);
+            uint a=1,b=0;foreach(byte v in input){a=(a+v)%65521;b=(b+a)%65521;}
+            BE(compressed,(b<<16|a)^(badAdler?1u:0u));z=compressed.ToArray();
+        }
+        using(var png=new MemoryStream()) {
+            png.Write(new byte[]{137,80,78,71,13,10,26,10},0,8);
+            using(var header=new MemoryStream()) { BE(header,(uint)width);BE(header,(uint)height);header.Write(new byte[]{(byte)depth,(byte)type,0,0,(byte)interlace},0,5);Chunk(png,"IHDR",header.ToArray()); }
+            if(colours!=null)Chunk(png,"PLTE",colours);
+            if(alpha!=null)Chunk(png,"tRNS",alpha);
+            if(split){Chunk(png,"IDAT",z.Take(z.Length/2).ToArray());Chunk(png,"IDAT",z.Skip(z.Length/2).ToArray());}
+            else Chunk(png,"IDAT",z);
+            Chunk(png,"IEND",new byte[0]);return png.ToArray();
+        }
+    }
+    public static void OtherPrefix() { }
+    public static int Main(string[] args)
+    {
+        try {
+            string root=args[0];fixtures=Path.Combine(args[2],Guid.NewGuid().ToString("N"));Directory.CreateDirectory(fixtures);
+            byte[] pal=File.ReadAllBytes(args[1]);paletteRGB=pal.Skip(pal.Length-768).ToArray();palette=new DFPalette(); using(var memory=new MemoryStream(paletteRGB)) { var reader=new BinaryReader(memory); Assert(palette.Read(ref reader),"Read COL palette"); }
+            sample=File.ReadAllBytes(Path.Combine(root,"Vanilla/235/20-0.png"));File.WriteAllBytes(Path.Combine(fixtures,"good.png"),sample);
+            var dyes=((DyeColors[])Enum.GetValues(typeof(DyeColors))).Distinct().ToArray();
+
+            Test("Archive names preserve disk labels and reject ambiguous or unsafe names",()=>{
+                Assert(ArchiveSelection.ParseFolder("235")==235,"Numeric compatibility");
+                Assert(ArchiveSelection.ParseFolder("235-(Argonian Female Clothing)")==235,"Label parsed");
+                foreach(string bad in new[]{"0235","235-()","235-( )","235-(x","235-(a/b)","235-(a(b))","235-(a)tail","235-( x)","235-(x )","235-(a:b)","235-("})
+                    Reject(()=>ArchiveSelection.ParseFolder(bad));
+                string dir=Pack("Labels",Archive("235-(Argonian Female Clothing)","auto"));
+                Png(dir,"235-(Argonian Female Clothing)/0-0.png");
+                var logs=new List<string>();var lib=Library(logs);lib.LoadManifest(dir,Manifest(Archive("235-(Argonian Female Clothing)","auto")));
+                int result;Assert(lib.TryGet(235,0,DyeColors.Blue,out result),"Full labelled path read");
+                Png(dir,"235/0-0.png");lib.LoadManifest(dir,Manifest(Archive("235")));
+                Assert(lib.Count==1 && logs.Any(x=>x.Contains("Duplicate mapping")),"Numeric/label duplicate keeps first");lib.Clear();
+            });
+            Test("Race and gender map to DFU vanilla body archives",()=>{
+                var races=new[]{Races.Argonian,Races.DarkElf,Races.HighElf,Races.WoodElf,Races.Breton,Races.Nord,Races.Redguard,Races.Khajiit};
+                var offsets=new[]{0,1,1,1,2,2,2,3};int archive;
+                for(int i=0;i<races.Length;i++) {
+                    Assert(ArchiveSelection.TryGetArchive(Genders.Female,races[i],out archive) && archive==235+offsets[i],"Female body archive");
+                    Assert(ArchiveSelection.TryGetArchive(Genders.Male,races[i],out archive) && archive==239+offsets[i],"Male body archive");
+                }
+                Assert(!ArchiveSelection.TryGetArchive((Genders)99,Races.Argonian,out archive),"Unknown gender fails closed");
+                Assert(!ArchiveSelection.TryGetArchive(Genders.Female,(Races)999,out archive),"Unknown race fails closed");
+            });
+            Test("Archive filter precedes IO/budget and rescan selects a new player archive",()=>{
+                string dir=Pack("Filter",Archive("235"),Archive("239-(Male Clothing)"));
+                Png(dir,"235/0-0.png");Png(dir,"239-(Male Clothing)/0-0.png");
+                var logs=new List<string>();var notes=new List<string>();int selected=235,reads=0,releases=0;
+                var lib=new IconLibrary<int>(palette,(icon,dye)=>++reads,_=>releases++,logs.Add,notes.Add,a=>a==selected);
+                string manifest=Manifest(Archive("240-(Missing folder)"),Archive("235"),Archive("239-(Male Clothing)"));
+                lib.LoadManifest(dir,manifest);int result;
+                Assert(lib.Count==1 && reads==0 && logs.Count==0,"Skipped missing folder not touched; lazy registration");
+                Assert(lib.TryGet(235,0,DyeColors.Blue,out result) && !lib.TryGet(239,0,DyeColors.Blue,out result),"Only selected archive");
+                selected=239;lib.Clear();lib.LoadManifest(dir,manifest);
+                Assert(releases==1 && lib.Count==1 && lib.TryGet(239,0,DyeColors.Blue,out result),"Old textures released and new archive selected");
+                Assert(!lib.TryGet(235,0,DyeColors.Blue,out result),"No stale player mappings");lib.Clear();
+            });
+            Test("Equipment profiles select correct gender and body archives",()=>{
+                var races=new[]{Races.Argonian,Races.DarkElf,Races.HighElf,Races.WoodElf,Races.Breton,Races.Nord,Races.Redguard,Races.Khajiit};
+                int[] offsets={0,1,1,1,2,2,2,3};ArchiveSelection.Profile p;
+                for(int i=0;i<races.Length;i++)foreach(Genders gender in new[]{Genders.Female,Genders.Male}) {
+                    bool female=gender==Genders.Female;
+                    Assert(ArchiveSelection.TryGetProfile(gender,races[i],out p),"Supported profile");
+                    Assert(p.Clothing==(female?235:239)+offsets[i],"Clothing unchanged");
+                    Assert(p.Armor==(female?245:249)+offsets[i],"Armor body offset");
+                    Assert(p.Weapons==(female?233:234) && p.Artifacts==(female?433:432),"Gender-only mapping");
+                    Assert(p.Includes(p.Clothing) && p.Includes(p.Weapons) && p.Includes(p.Artifacts) && p.Includes(p.Armor),"Four selected archives");
+                    Assert(!p.Includes(female?234:233) && !p.Includes(female?432:433),"Opposite gender excluded");
+                }
+                Assert(!ArchiveSelection.TryGetProfile((Genders)99,Races.Argonian,out p) && p==null,"Invalid gender");
+                Assert(!ArchiveSelection.TryGetProfile(Genders.Male,(Races)999,out p) && p==null,"Unsupported race");
+            });
+            Test("Four-category discovery stays lazy and reload replaces selection",()=>{
+                string dir=Pack("Equipment");
+                int[] ids={233,234,235,237,242,247,252,432,433};
+                foreach(int id in ids)Png(dir,id+"-(Equipment)/0-0.png",new byte[]{1,2});
+                string manifest=Manifest(ids.Select(id=>Archive(id+"-(Equipment)","auto")).ToArray());
+                ArchiveSelection.Profile profile;ArchiveSelection.TryGetProfile(Genders.Female,Races.Redguard,out profile);
+                int renders=0;var notes=new List<string>();var logs=new List<string>();
+                var lib=new IconLibrary<int>(palette,(icon,dye)=>++renders,_=>{},logs.Add,notes.Add,a=>profile.Includes(a));
+                lib.LoadManifest(dir,manifest);
+                Assert(lib.Count==4 && renders==0 && logs.Count==0,"Discovery does not read invalid image payloads");
+                foreach(int id in new[]{233,237,247,433})Assert(lib.CountForArchive(id)==1,"Female selected count");
+                Assert(lib.CountForArchive(432)==0 && lib.CachedCount==0,"No inactive archive or GPU cache");
+                ArchiveSelection.TryGetProfile(Genders.Male,Races.Khajiit,out profile);lib.Clear();lib.LoadManifest(dir,manifest);
+                foreach(int id in new[]{234,242,252,432})Assert(lib.CountForArchive(id)==1,"Male selected count after reload");
+                Assert(lib.Count==4 && lib.CountForArchive(237)==0 && renders==0,"No previous selection remains");lib.Clear();
+            });
+            Test("Inventory-open trigger is safe before initialization and preserves selected caches",()=>{
+                var flags=System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Static;
+                var libraryField=typeof(Icons).GetField("library",flags);var pendingField=typeof(Icons).GetField("selectionPending",flags);
+                object prior=libraryField.GetValue(null),pending= pendingField.GetValue(null);
+                try {
+                    libraryField.SetValue(null,null);pendingField.SetValue(null,true);
+                    InventoryPatch.OnInventoryOpening();Assert(libraryField.GetValue(null)==null,"Early opening is harmless");
+                    string dir=Pack("OpenCache",Archive());Png(dir,"235/0-0.png");
+                    int releases=0;var lib=new IconLibrary<ImageData>(palette,(icon,dye)=>default(ImageData),_=>releases++,_=>{});
+                    lib.LoadManifest(dir,Manifest(Archive()));ImageData image;Assert(lib.TryGet(235,0,DyeColors.Blue,out image),"Cached fixture");
+                    libraryField.SetValue(null,lib);pendingField.SetValue(null,false);
+                    InventoryPatch.OnInventoryOpening();InventoryPatch.OnInventoryOpening();
+                    Assert(lib.CachedCount==1 && releases==0,"Repeated opening preserves selected cache");
+                    Icons.InvalidatePlayerSelection();Assert(lib.CachedCount==0 && releases==1 && (bool)pendingField.GetValue(null),"Lifecycle invalidation rearms selection");
+                } finally {libraryField.SetValue(null,prior);pendingField.SetValue(null,pending);}
+            });
+            Test("Native equipment materials and artifact masks match DFU without mutating base",()=>{
+                byte[] indices={255,0,96,111,112,113,120,127,128,160};
+                var bitmap=new DFBitmap(5,2){Palette=palette};Array.Copy(indices,bitmap.Data,indices.Length);
+                foreach(var policy in new[]{IconProcessing.WeaponsAndArmor,IconProcessing.Artifact})foreach(var dye in dyes) {
+                    var messages=new List<string>();
+                    var input=new PngIcon{Width=5,Height=2,Indexed=bitmap,Processing=policy};
+                    var actual=Icons.PrepareForRender(input,dye,messages.Add);
+                    var native=ImageProcessing.ChangeMask(bitmap);
+                    if(policy==IconProcessing.WeaponsAndArmor)native=ImageProcessing.ChangeDye(native,dye,DyeTargets.WeaponsAndArmor);
+                    var expected=IconLayout.Prepare(new PngIcon{Width=5,Height=2,Indexed=native});
+                    Assert(actual.Indexed.Data.SequenceEqual(expected.Indexed.Data),"Native equipment mismatch");
+                    Assert(bitmap.Data.SequenceEqual(indices),"Cached base mutated");
+                    Assert(messages.Any(x=>x.Contains("DFU dye start"))==(policy==IconProcessing.WeaponsAndArmor),"Artifact received material processing");
+                }
+                Assert(Icons.InventoryRecord(12,true)==13&&Icons.InventoryRecord(12,false)==12,"Katana record changed");
+            });
+            Test("Equipment modes honor manifests and material caches remain independent",()=>{
+                foreach(int archive in new[]{233,234,432,433,245,246,247,248,249,250,251,252})foreach(string mode in new[]{"auto","indexed","fixed"}) {
+                    string dir=Pack("Native"+archive+mode,Archive(archive.ToString(),mode));Png(dir,archive+"/0-0.png",mode=="fixed"?MakePng(new byte[]{12,34,56,255},1,1,6):null);
+                    var messages=new List<string>();int renders=0;IconProcessing policy=IconProcessing.Clothing;
+                    var lib=new IconLibrary<int>(palette,(icon,dye)=>{renders++;policy=icon.Processing;
+                        Assert((icon.Indexed==null)==(mode=="fixed"),"Manifest mode ignored");return 1;},x=>{},messages.Add,messages.Add);
+                    lib.LoadManifest(dir,File.ReadAllText(Path.Combine(dir,"pack.json")));int image;
+                    Assert(renders==0,"Eager decode");
+                    Assert(lib.TryGet(archive,0,dyes[0],out image,archive==432||archive==433)&&lib.TryGet(archive,0,dyes[1],out image,archive==432||archive==433),"Equipment decode failed");
+                    bool artifact=archive==432||archive==433;
+                    Assert(renders==(mode=="fixed"||artifact?1:2),"Material cache policy incorrect");
+                    Assert(policy==(artifact?IconProcessing.Artifact:IconProcessing.WeaponsAndArmor),"Wrong native target");
+                    Assert(messages.Count(x=>x.Contains("Auto-index start"))==(mode=="auto"?1:0),"Conversion count incorrect");
+                }
+            });
+            Test("Auto indexing exact/nearest, alpha, orientation and reserved slots",()=>{
+                var pixels=new UnityEngine.Color32[] {
+                    new UnityEngine.Color32(palette.GetRed(100),palette.GetGreen(100),palette.GetBlue(100),255),
+                    new UnityEngine.Color32(13,27,53,128),new UnityEngine.Color32(255,0,0,127),new UnityEngine.Color32(0,0,0,0)};
+                var input=new PngIcon{Width=2,Height=2,FixedPixels=pixels};var messages=new List<string>();
+                var output=AutoIndexer.Convert(input,palette,messages.Add);
+                Assert(output.Indexed.Data[0]==0 && output.Indexed.Data[1]==0,"Alpha threshold/orientation");
+                for(int p=0;p<2;p++) {
+                    int best=int.MaxValue,slot=0;for(int i=1;i<255;i++) {
+                        int dr=pixels[p].r-palette.GetRed(i),dg=pixels[p].g-palette.GetGreen(i),db=pixels[p].b-palette.GetBlue(i);
+                        int distance=dr*dr+dg*dg+db*db;if(distance<best){best=distance;slot=i;}
+                    }
+                    Assert(output.Indexed.Data[2+p]==slot,"Nearest match and lowest tie");
+                }
+                Assert(messages.Count==1 && messages[0].Contains("transparent=2") && messages[0].Contains("partial-alpha=2"),"Conversion counters");
+                Assert(input.Indexed==null && pixels[1].a==128,"Source immutable");
+            });
+            Test("Exact mask black survives indexing then native ChangeMask removes it",()=>{
+                var input=new PngIcon{Width=5,Height=1,FixedPixels=new[]{
+                    new UnityEngine.Color32(0,0,0,0),new UnityEngine.Color32(0,0,0,255),
+                    new UnityEngine.Color32(1,1,1,255),new UnityEngine.Color32(0,0,0,127),new UnityEngine.Color32(0,0,0,128)}};
+                var messages=new List<string>();var converted=AutoIndexer.Convert(input,palette,messages.Add);
+                Assert(converted.Indexed.Data[0]==0 && converted.Indexed.Data[3]==0,"Transparent pixels stay zero");
+                Assert(converted.Indexed.Data[1]==255 && converted.Indexed.Data[4]==255,"Mask colour uses 255 above threshold");
+                Assert(converted.Indexed.Data[2]!=0 && converted.Indexed.Data[2]!=255,"Near-black survives");
+                var cleaned=ImageProcessing.ChangeMask(converted.Indexed);
+                Assert(cleaned.Data[1]==0 && cleaned.Data[4]==0 && cleaned.Data[2]==converted.Indexed.Data[2],"Native cleanup removes only mask slots");
+                Assert(converted.Indexed.Data[1]==255,"Source remains immutable");
+                Assert(messages[0].Contains("mask-pixels=2"),"Mask count logged");
+                var rendered=Icons.PrepareForRender(converted,DyeColors.Red,messages.Add);
+                Assert(rendered.Indexed.Data.Count(x=>x!=0)==1 && messages.Any(x=>x.Contains("removed-mask-pixels=2")),"Production path and removal count");
+            });
+            Test("Auto bitmap passes through native DFU dye processing before layout",()=>{
+                var input=PngIcon.Decode(sample,false,palette);var messages=new List<string>();
+                var converted=AutoIndexer.Convert(input,palette,messages.Add);
+                byte[] original=(byte[])converted.Indexed.Data.Clone();
+                foreach(var dye in dyes) {
+                    var direct=ImageProcessing.ChangeDye(ImageProcessing.ChangeMask(converted.Indexed),dye,DyeTargets.Clothing);
+                    var expected=IconLayout.Prepare(new PngIcon{Width=direct.Width,Height=direct.Height,Indexed=direct});
+                    var actual=Icons.PrepareForRender(converted,dye,messages.Add);
+                    Assert(actual.Indexed.Data.SequenceEqual(expected.Indexed.Data),"Native dye then crop result");
+                    Assert(original.SequenceEqual(converted.Indexed.Data),"Cached source unchanged");
+                }
+                Assert(messages.Count(x=>x.Contains("DFU dye start"))==dyes.Length && messages.Count(x=>x.Contains("DFU dye complete"))==dyes.Length,"Dye handoff logged");
+                var masked=new DFBitmap(3,1){Palette=palette};masked.Data[0]=96;masked.Data[1]=255;masked.Data[2]=111;
+                var cleaned=Icons.PrepareForRender(new PngIcon{Width=3,Height=1,Indexed=masked},DyeColors.Red,messages.Add);
+                Assert(!cleaned.Indexed.Data.Contains((byte)255) && cleaned.Indexed.Data[7]==0,"Native paperdoll mask removed");
+                Assert(masked.Data[1]==255,"Mask source immutable");
+                int maskStart=messages.FindIndex(x=>x.Contains("DFU mask start")), maskEnd=messages.FindIndex(x=>x.Contains("DFU mask complete")), dyeStart=messages.FindIndex(x=>x.Contains("DFU dye start"));
+                Assert(maskStart>=0 && maskStart<maskEnd && maskEnd<dyeStart,"Native call/log order");
+                var fixedOutput=Icons.PrepareForRender(input,DyeColors.Red,messages.Add);
+                Assert(fixedOutput.Indexed==null && messages.Any(x=>x.Contains("DFU mask/dye bypass")),"Fixed mode bypass");
+            });
+            Test("Auto converts once across dyes; reload reconverts; legacy mask files ignored",()=>{
+                string dir=Pack("AutoPack",Archive("235","auto"));
+                Png(dir,"235/1-0.png",MakePng(new byte[]{20,40,80,255},1,1,6));
+                // Broken legacy sidecar must neither be read nor disable the icon.
+                Png(dir,"235/masks/1-0.png",new byte[]{1,2});
+                var logs=new List<string>();var diagnostics=new List<string>();int renders=0;
+                var lib=new IconLibrary<int>(palette,(icon,dye)=>{Icons.PrepareForRender(icon,dye,diagnostics.Add);return ++renders;},_=>{},logs.Add,diagnostics.Add);
+                lib.LoadManifest(dir,Manifest(Archive("235","auto")));Assert(lib.Count==1,"Subfolder not an icon");
+                int result;Assert(lib.TryGet(235,1,DyeColors.Blue,out result),"First load");
+                Assert(lib.TryGet(235,1,DyeColors.Red,out result),"Second dye");Assert(lib.TryGet(235,1,DyeColors.Blue,out result),"Cache hit");
+                Assert(renders==2 && diagnostics.Count(x=>x.Contains("Auto-index complete"))==1,"Single conversion");
+                Assert(diagnostics.Count(x=>x.Contains("DFU dye start"))==2,"No processing on cache hit");
+                lib.Clear();lib.LoadManifest(dir,Manifest(Archive("235","auto")));
+                Assert(lib.TryGet(235,1,DyeColors.Blue,out result),"Reload works");
+                Assert(diagnostics.Count(x=>x.Contains("Auto-index complete"))==2 && logs.Count==0,"Reload reconverts without mask warnings");
+                lib.Clear();
+            });
+            Test("Layout crops indexed bounds without modifying source or dye slots",()=>{
+                var b=new DFBitmap(40,80){Palette=palette};b.Data[30*40+10]=96;b.Data[34*40+16]=111;
+                byte[] before=(byte[])b.Data.Clone();var icon=new PngIcon{Width=40,Height=80,Indexed=b};
+                var crop=IconLayout.Prepare(icon);
+                Assert(crop.Width==9 && crop.Height==7,"Tight bounds plus margin");
+                Assert(crop.Indexed.Data[1*9+1]==96 && crop.Indexed.Data[5*9+7]==111,"Indices and orientation retained");
+                Assert(before.SequenceEqual(b.Data),"Input immutable");
+                foreach(var dye in dyes) {
+                    var original=Icons.ApplyDye(b,dye);var compact=Icons.ApplyDye(crop.Indexed,dye);
+                    Assert(original.Data[30*40+10]==compact.Data[10] && original.Data[34*40+16]==compact.Data[52],"Dye commutes with crop");
+                }
+                Reject(()=>IconLayout.Prepare(new PngIcon{Width=2,Height=2,Indexed=new DFBitmap(2,2){Palette=palette}}));
+            });
+            Test("Layout preserves RGBA alpha, colour and bottom-up orientation",()=>{
+                var rgba=new UnityEngine.Color32[60];rgba[2*10+3]=new UnityEngine.Color32(10,20,30,127);rgba[3*10+4]=new UnityEngine.Color32(40,50,60,255);
+                var crop=IconLayout.Prepare(new PngIcon{Width=10,Height=6,FixedPixels=rgba});
+                Assert(crop.Width==4 && crop.Height==4,"RGBA bounds");
+                Assert(crop.FixedPixels[5].a==127 && crop.FixedPixels[5].r==10,"Partial alpha survives");
+                Assert(crop.FixedPixels[10].r==40,"Bottom-up preserved");
+            });
+            Test("Authored plus-like pixels retain relative positions and affect bounds",()=>{
+                var b=new DFBitmap(40,80){Palette=palette};b.Data[4*40+35]=224;b.Data[3*40+35]=223;b.Data[40*40+10]=96;
+                var crop=IconLayout.Prepare(new PngIcon{Width=40,Height=80,Indexed=b});
+                Assert(crop.Width==28 && crop.Height==40,"All visible art contributes to bounds");
+                Assert(crop.Indexed.Data[2*28+26]==224 && crop.Indexed.Data[38*28+1]==96,"Relative position unchanged");
+                Assert(crop.Indexed.Data.Count(x=>x!=0)==3,"No marker added or deleted");
+            });
+            Test("Shipped external pack parsed from disk through production FullSerializer loader",()=>{
+                // Regression gate for 0.0.1's missed manifest-loading path: do not
+                // construct a DTO or substitute a synthetic manifest for this check.
+                var logs=new List<string>();var lib=Library(logs);int image;
+                lib.LoadDirectory(root);
+                Assert(lib.Count==5&&lib.CachedCount==0&&logs.Count==0,"Shipped pack registration failed");
+                for(int record=16;record<=20;record++)
+                    Assert(lib.TryGet(235,record,DyeColors.Red,out image),"Shipped mapping failed");
+                Assert(lib.CachedCount==5&&logs.Count==0,"Shipped pack decode failed");
+                lib.Clear();
+            });
+            Test("Five shipped PNGs: real DFU dye table, transparency, immutable base; all distinct dyes",()=>{
+                for(int record=16;record<=20;record++) {
+                    var png=PngIcon.Decode(File.ReadAllBytes(Path.Combine(root,"Vanilla/235/"+record+"-0.png")),true,palette);
+                    byte[] original=(byte[])png.Indexed.Data.Clone();
+                    Assert(original.Any(p=>p>=96&&p<=111),"Every shipped style must contain dye slots");
+                    foreach(var dye in dyes) {
+                        var dyed=Icons.ApplyDye(png.Indexed,dye);var swaps=ImageProcessing.GetDyeColorTable(dye,DyeTargets.Clothing);
+                        for(int i=0;i<original.Length;i++) {
+                            Assert(dyed.Data[i]==(original[i]>=96&&original[i]<=111?swaps[original[i]-96]:original[i]),"Dye mismatch");
+                            Assert((dyed.Data[i]==0)==(original[i]==0),"Transparency changed");
+                        }
+                        Assert(png.Indexed.Data.SequenceEqual(original),"Base mutated");
+                        if(dye==DyeColors.Red)Assert(!dyed.Data.SequenceEqual(original),"Shipped style must respond to red dye");
+                        // Records 16..19 deliberately normalize the old brown ramp.
+                        // LightBrown must restore those exact shade indices, not a tint approximation.
+                        if(record<20&&dye==DyeColors.LightBrown)
+                            Assert(dyed.Data.SequenceEqual(original.Select(p=>(byte)(p==0?0:p-32))),"Brown shade roundtrip failed");
+                    }
+                }
+            });
+            Test("Every PNG filter, multiple IDAT, indexed slot identity",()=>{
+                byte[] p={0,96,111,64,65,100};
+                for(int filter=0;filter<=4;filter++) {
+                    var decoded=PngIcon.Decode(MakePng(p,3,2,3,filter,paletteRGB,new byte[]{0},split:true),true,palette);
+                    Assert(decoded.Indexed.Data.SequenceEqual(p),"Unfilter mismatch");
+                }
+            });
+            Test("Fixed RGB/RGBA/palette preserve colour, alpha and bottom-up orientation",()=>{
+                for(int type=2;type<=6;type++) {
+                    if(type!=2&&type!=3&&type!=6)continue;
+                    for(int filter=0;filter<=4;filter++) {
+                        byte[] p=type==2?new byte[]{10,20,30,40,50,60}:type==3?new byte[]{0,1}:new byte[]{10,20,30,0,40,50,60,127};
+                        var decoded=PngIcon.Decode(MakePng(p,1,2,type,filter,type==3?new byte[]{10,20,30,40,50,60}:null,type==3?new byte[]{0,127}:null),false,palette);
+                        Assert(decoded.FixedPixels[0].r==40&&decoded.FixedPixels[1].b==30,"RGB or orientation mismatch");
+                        Assert(decoded.FixedPixels[0].a==(type==2?255:127)&&decoded.FixedPixels[1].a==(type==2?255:0),"Alpha mismatch");
+                    }
+                }
+            });
+            Test("PNG rejects truncation, CRC, Adler, inflated size, bad filter, bitdepth, interlace, oversize",()=>{
+                Reject(()=>PngIcon.Decode(sample.Take(sample.Length-1).ToArray(),true,palette));
+                var crc=(byte[])sample.Clone();crc[20]^=1;Reject(()=>PngIcon.Decode(crc,true,palette));
+                byte[] p={96};
+                Reject(()=>PngIcon.Decode(MakePng(p,1,1,3,0,paletteRGB,new byte[]{0},badAdler:true),true,palette));
+                Reject(()=>PngIcon.Decode(MakePng(p,1,1,3,0,paletteRGB,new byte[]{0},extraInflated:true),true,palette));
+                Reject(()=>PngIcon.Decode(MakePng(p,1,1,3,5,paletteRGB,new byte[]{0}),true,palette));
+                Reject(()=>PngIcon.Decode(MakePng(p,1,1,3,0,paletteRGB,new byte[]{0},depth:4),true,palette));
+                Reject(()=>PngIcon.Decode(MakePng(p,1,1,3,0,paletteRGB,new byte[]{0},interlace:1),true,palette));
+                Reject(()=>PngIcon.Decode(MakePng(new byte[257],257,1,3,0,paletteRGB,new byte[]{0}),true,palette));
+            });
+            Test("Indexed mode rejects reordered palette, wrong alpha, mask255 and RGBA",()=>{
+                var wrong=(byte[])paletteRGB.Clone();wrong[0]^=1;
+                Reject(()=>PngIcon.Decode(MakePng(new byte[]{96},1,1,3,0,wrong,new byte[]{0}),true,palette));
+                Reject(()=>PngIcon.Decode(MakePng(new byte[]{96},1,1,3,0,paletteRGB,null),true,palette));
+                Reject(()=>PngIcon.Decode(MakePng(new byte[]{96},1,1,3,0,paletteRGB,new byte[]{0,127}),true,palette));
+                Reject(()=>PngIcon.Decode(MakePng(new byte[]{255},1,1,3,0,paletteRGB,new byte[]{0}),true,palette));
+                Reject(()=>PngIcon.Decode(MakePng(new byte[4],1,1,6),true,palette));
+            });
+            Test("Schema 3 logs distinguish settings from indexed and unchanged outcomes",()=>{
+                foreach(bool convert in new[]{true,false})foreach(bool indexedInput in new[]{true,false}) {
+                    string dir=Pack("LogTerms"+convert+indexedInput,Archive("235",convert?"auto":"indexed"));
+                    Png(dir,"235/0-0.png",indexedInput?sample:MakePng(new byte[]{12,34,56,255},1,1,6));
+                    var messages=new List<string>();var lib=new IconLibrary<int>(palette,(icon,dye)=>1,x=>{},messages.Add,messages.Add);
+                    lib.LoadManifest(dir,File.ReadAllText(Path.Combine(dir,"pack.json")));int image;
+                    Assert(lib.TryGet(235,0,dyes[0],out image),"Log fixture failed");
+                    Assert(messages.Any(x=>x.Contains("auto-indexing enabled="+(convert?"true":"false"))&&x.Contains("palette-processing type=clothing")),"Schema settings missing");
+                    string outcome=convert?"auto-indexed DFU palette":indexedInput?"existing DFU palette indexes preserved":"PNG colours unchanged; native palette processing bypassed";
+                    Assert(messages.Any(x=>x.Contains(outcome)),"Source outcome missing");
+                    Assert(!messages.Any(x=>x.Contains("mode=")),"Old mode label leaked");
+                }
+            });
+            Test("Schema 3 boolean forms, author-selected targets and invalid entries",()=>{
+                foreach(string enabled in new[]{"true","false","\"TRUE\"","\"fAlSe\""})foreach(string target in new[]{"clothing","EQUIPMENT"}) {
+                    string dir=Pack("V3"+Guid.NewGuid().ToString("N"),Archive());Png(dir,"235/0-0.png");
+                    string json="{\"schemaVersion\":3,\"archives\":[{\"folder\":\"235\",\"auto-indexing enabled\":"+enabled+",\"palette-processing type\":\""+target+"\"}]}";
+                    var logs=new List<string>();IconProcessing actual=IconProcessing.Artifact;
+                    var lib=new IconLibrary<int>(palette,(icon,dye)=>{actual=icon.Processing;Assert(icon.Indexed!=null,"Lost indexed source");return 1;},x=>{},logs.Add);
+                    lib.LoadManifest(dir,json);int image;Assert(lib.Count==1&&lib.TryGet(235,0,dyes[0],out image),"Schema 3 did not load");
+                    Assert(actual==(target=="clothing"?IconProcessing.Clothing:IconProcessing.WeaponsAndArmor),"Folder overrode author target");
+                    foreach(string bad in new[]{"1","null","\"yes\""}) {
+                        var invalid=Library(logs);invalid.LoadManifest(dir,json.Replace("\"auto-indexing enabled\":"+enabled,"\"auto-indexing enabled\":"+bad));Assert(invalid.Count==0,"Invalid boolean accepted");
+                    }
+                    var invalidTarget=Library(logs);invalidTarget.LoadManifest(dir,json.Replace(target,"unknown"));Assert(invalidTarget.Count==0,"Invalid target accepted");
+                }
+            });
+            Test("No conversion preserves compatible slots, mask255 and arbitrary PNG colours",()=>{
+                var indexed=PngIcon.Decode(MakePng(new byte[]{96,112,255,0},2,2,3,0,paletteRGB,new byte[]{0}),false,palette,true);
+                Assert(indexed.Indexed!=null&&indexed.Indexed.Data.SequenceEqual(new byte[]{96,112,255,0}),"Index identity lost");
+                var wrong=(byte[])paletteRGB.Clone();wrong[3]^=1;
+                var foreign=PngIcon.Decode(MakePng(new byte[]{1},1,1,3,0,wrong,new byte[]{0}),false,palette,true);
+                Assert(foreign.Indexed==null&&foreign.FixedPixels[0].r==wrong[3],"Foreign palette interpreted as DFU");
+                string dir=Pack("V3Rgb",Archive());Png(dir,"235/0-0.png",MakePng(new byte[]{12,34,56,128},1,1,6));
+                string json="{\"schemaVersion\":3,\"archives\":[{\"folder\":\"235\",\"auto-indexing enabled\":false,\"palette-processing type\":\"equipment\"}]}";
+                int renders=0;var logs=new List<string>();var lib=new IconLibrary<int>(palette,(icon,dye)=>{renders++;Assert(icon.Indexed==null&&icon.FixedPixels[0].a==128,"RGB changed");return 1;},x=>{},logs.Add,logs.Add);
+                lib.LoadManifest(dir,json);int image;Assert(lib.TryGet(235,0,dyes[0],out image)&&lib.TryGet(235,0,dyes[1],out image)&&renders==1,"No-conversion cache split");
+                Assert(!logs.Any(x=>x.Contains("Auto-index start")),"Disabled conversion ran");
+            });
+            Test("Schema 3 parses folder manifests and rejects old/invalid schemas",()=>{
+                var lib=Library(new List<string>());
+                foreach(string json in new[]{"{","{}","{\"schemaVersion\":1,\"icons\":[]}","{\"schemaVersion\":\"2\",\"archives\":[]}","{\"schemaVersion\":2,\"archives\":{}}",Manifest()})Reject(()=>lib.LoadManifest(fixtures,json));
+                Reject(()=>lib.LoadManifest(fixtures,Manifest(Enumerable.Repeat(Archive(),129).ToArray())));
+            });
+            Test("Folder selection, numeric naming and nonzero frame rejection are isolated",()=>{
+                string dir=Pack("Names",Archive(),"null",Archive("../236"),Archive("0235"),Archive("missing"),Archive("236").Replace("clothing","tint"));
+                Png(dir,"235/20-0.png"); Png(dir,"235/21-1.png");Png(dir,"235/022-0.png");Png(dir,"235/no.png");
+                Png(dir,"235/Nested/23-0.png");Png(dir,"236/24-0.png");
+                var logs=new List<string>();var lib=Library(logs);lib.LoadManifest(dir,File.ReadAllText(Path.Combine(dir,"pack.json")));
+                int image;Assert(lib.Count==1&&lib.TryGet(235,20,DyeColors.Red,out image),"Naming or selected folder logic failed");
+                Assert(!lib.TryGet(235,21,DyeColors.Red,out image)&&!lib.TryGet(235,23,DyeColors.Red,out image)&&!lib.TryGet(236,24,DyeColors.Red,out image),"Scanned unselected/nested/nonzero frame");
+                Assert(logs.Count==8,"Expected isolated row/filename warnings");
+                foreach(string bad in new[]{"-1","+1"," 1","1/2","01","1000","C:",""})Reject(()=>IconLibrary<int>.ParseIndex(bad,999));
+            });
+            Test("Multiple archives, lazy PNG reads, per-dye cache and fixed sharing",()=>{
+                string dir=Pack("Lazy",Archive(),Archive("236","fixed"));Png(dir,"235/20-0.png");Png(dir,"236/20-0.png",MakePng(new byte[]{12,34,56,255},1,1,6));
+                int renders=0;var lib=Library(new List<string>(),render:(p,d)=>++renders);lib.LoadDirectory(Path.GetDirectoryName(dir));
+                // Scope directly to this manifest: other fixture packs intentionally conflict.
+                lib.Clear();lib.LoadManifest(dir,File.ReadAllText(Path.Combine(dir,"pack.json")));
+                int image;Assert(renders==0&&lib.CachedCount==0,"Eager render");
+                Assert(lib.TryGet(235,20,DyeColors.Red,out image)&&image==1,"First render");
+                Png(dir,"235/20-0.png",new byte[]{0}); // Later dye must reuse decoded PNG, not reread.
+                Assert(lib.TryGet(235,20,DyeColors.Red,out image)&&renders==1,"Cache miss");
+                Assert(lib.TryGet(235,20,DyeColors.Blue,out image)&&renders==2,"PNG reread or dye cache collision");
+                Assert(lib.TryGet(236,20,DyeColors.Red,out image)&&lib.TryGet(236,20,DyeColors.Blue,out image)&&renders==3,"Fixed cache not shared");
+                Assert(!lib.TryGet(237,20,DyeColors.Red,out image)&&!lib.TryGet(235,21,DyeColors.Red,out image),"Wrong archive/record intercepted");
+                Assert(!lib.TryGet(235,20,(DyeColors)999,out image)&&lib.CachedCount==3,"Invalid dye cached");
+            });
+            Test("Missing/corrupt PNG and renderer failures log once; valid neighbour continues",()=>{
+                string dir=Pack("Failures",Archive());Png(dir,"235/18-0.png");Png(dir,"235/19-0.png",new byte[]{1,2});Png(dir,"235/20-0.png");
+                var logs=new List<string>();var lib=Library(logs);lib.LoadManifest(dir,Manifest(Archive()));
+                File.Delete(Path.Combine(dir,"235/18-0.png"));int image;
+                for(int i=0;i<3;i++){Assert(!lib.TryGet(235,18,DyeColors.Red,out image),"Missing accepted");Assert(!lib.TryGet(235,19,DyeColors.Red,out image),"Corrupt accepted");}
+                Assert(logs.Count==2&&lib.TryGet(235,20,DyeColors.Red,out image),"Failure spread/log spam");
+                var failing=Library(logs,render:(p,d)=>{throw new InvalidOperationException("Injected renderer failure");});
+                failing.LoadManifest(dir,Manifest(Archive()));
+                Assert(!failing.TryGet(235,20,DyeColors.Red,out image)&&!failing.TryGet(235,20,DyeColors.Red,out image)&&logs.Count==3,"Render failure spam");
+            });
+            Test("Reload discovers new PNG, retries repair and releases cached result once",()=>{
+                string dir=Pack("Reload/Pack",Archive());Png(dir,"235/20-0.png",new byte[]{0});
+                int released=0,image;var lib=Library(new List<string>(),()=>released++);
+                lib.LoadDirectory(Path.GetDirectoryName(dir));Assert(!lib.TryGet(235,20,DyeColors.Red,out image),"Bad file accepted");
+                Png(dir,"235/20-0.png");Png(dir,"235/21-0.png");
+                Assert(!lib.TryGet(235,20,DyeColors.Red,out image)&&!lib.TryGet(235,21,DyeColors.Red,out image),"Retried/discovered without reload");
+                lib.LoadDirectory(Path.GetDirectoryName(dir));Assert(lib.Count==2&&lib.TryGet(235,20,DyeColors.Red,out image),"Repair/new PNG not discovered");
+                lib.LoadDirectory(Path.GetDirectoryName(dir));Assert(released==1&&lib.CachedCount==0,"Release mismatch");
+                lib.Clear();Assert(released==1,"Double release");
+            });
+            Test("Sorted packs, duplicate first-wins, malformed pack and missing root",()=>{
+                string a=Pack("Order/A",Archive()),z=Pack("Order/Z",Archive()),bad=Pack("Order/Bad",Archive());
+                Png(a,"235/20-0.png");Png(z,"235/20-0.png",new byte[]{0});File.WriteAllText(Path.Combine(bad,"pack.json"),"{");
+                var logs=new List<string>();var lib=Library(logs);int image;lib.LoadDirectory(Path.GetDirectoryName(a));
+                Assert(lib.Count==1&&lib.TryGet(235,20,DyeColors.Red,out image),"First winner not retained");
+                Assert(logs.Any(x=>x.Contains("Duplicate"))&&logs.Any(x=>x.Contains("Pack skipped")),"Missing diagnostics");
+                lib.LoadDirectory(Path.Combine(fixtures,"absent"));Assert(lib.Count==0&&logs.Last().Contains("Pack directory missing"),"Missing root fallback");
+            });
+            Test("Actual DFU settings toggle defaults off and build manifest includes it",()=>{
+                var serializer=new FullSerializer.fsSerializer();
+                DaggerfallWorkshop.Game.Utility.ModSupport.ModSettings.ModSettingsData settings=null;
+                serializer.TryDeserialize(FullSerializer.fsJsonParser.Parse(File.ReadAllText(Path.Combine(args[3],"modsettings.json"))),ref settings).AssertSuccess();
+                var key=settings["Options"]["Enable Mod Logging"] as DaggerfallWorkshop.Game.Utility.ModSupport.ModSettings.ToggleKey;
+                Assert(key!=null&&!key.Value&&key.Description.Contains("Logs/NeatFreaks"),"Settings key/default/path incorrect");
+                DaggerfallWorkshop.Game.Utility.ModSupport.ModInfo info=null;
+                serializer.TryDeserialize(FullSerializer.fsJsonParser.Parse(File.ReadAllText(Path.Combine(args[3],"neatfreaks.dfmod.json"))),ref info).AssertSuccess();
+                Assert(info.ModVersion=="0.1.6"&&info.Files.Count==11&&info.Files.Any(x=>x.EndsWith("modsettings.json")),"Settings not bundled");
+            });
+            Test("Disabled logging leaves files untouched while warnings reach normal log",()=>{
+                string dir=Path.Combine(fixtures,"LoggingOff");var logs=new List<string>();
+                using(var logger=new SessionLog(dir,(level,msg)=>logs.Add(level+":"+msg))) {
+                    logger.Write("INFO","hidden");logger.Write("WARN","visible");
+                    Assert(!Directory.Exists(dir)&&logs.Count==1&&logs[0].Contains("visible"),"Off session did IO or suppressed warning");
+                }
+                string path=Path.Combine(dir,"Logs/NeatFreaks");Directory.CreateDirectory(path);File.WriteAllText(Path.Combine(path,"NF.log"),"old");File.WriteAllText(Path.Combine(path,"NF-prev.log"),"older");
+                using(var logger=new SessionLog(dir,(l,m)=>{}))logger.SetEnabled(false);
+                Assert(File.ReadAllText(Path.Combine(path,"NF.log"))=="old"&&File.ReadAllText(Path.Combine(path,"NF-prev.log"))=="older","Disabled run touched logs");
+            });
+            Test("Stage timings distinguish lazy scan from first-use image work",()=>{
+                string dir=Path.Combine(fixtures,"TimingRoot");Directory.CreateDirectory(dir);
+                string pack=Path.Combine(dir,"Pack");Directory.CreateDirectory(pack);
+                File.WriteAllText(Path.Combine(pack,"pack.json"),Manifest(Archive("235","auto")));
+                Png(pack,"235/0-0.png");var messages=new List<string>();
+                var lib=new IconLibrary<int>(palette,(p,d)=>1,x=>{},messages.Add,messages.Add);
+                lib.LoadDirectory(dir);
+                Assert(messages.Any(x=>x.Contains("Timing: pack scan ms="))&&messages.Any(x=>x.Contains("validation-ms=")),"Scan timing missing");
+                Assert(!messages.Any(x=>x.Contains("decode-ms=")),"Scan decoded an image");
+                int image;Assert(lib.TryGet(235,0,dyes[0],out image),"Timed image failed");
+                foreach(string stage in new[]{"read-and-validation-ms=","decode-ms=","auto-index-ms=","render-ms="})
+                    Assert(messages.Any(x=>x.Contains(stage)),"Missing stage "+stage);
+                int count=messages.Count;Assert(lib.TryGet(235,0,dyes[0],out image)&&messages.Count==count,"Cache hit repeated image work");
+            });
+            Test("Normal and verbose modes preserve warnings and respect master switch",()=>{
+                string dir=Path.Combine(fixtures,"LoggingModes"),file=Path.Combine(dir,"Logs/NeatFreaks/NF.log");
+                var normal=new List<string>();
+                using(var logger=new SessionLog(dir,(l,m)=>normal.Add(l+":"+m))) {
+                    logger.Verbose=true;logger.Detail("disabled-detail");
+                    Assert(!Directory.Exists(dir)&&normal.Count==0,"Verbose bypassed master switch");
+                    logger.SetEnabled(true);logger.Verbose=false;
+                    logger.Write("INFO","event-summary");logger.Detail("hidden-detail");logger.Write("WARN","visible-warning");
+                    Assert(ReadLog(file).Contains("event-summary")&&!ReadLog(file).Contains("hidden-detail")&&ReadLog(file).Contains("visible-warning"),"Normal filtering failed");
+                    logger.Verbose=true;logger.Detail("visible-detail");logger.Flush();
+                    Assert(ReadLog(file).Contains("[DETAIL] visible-detail"),"Verbose detail missing");
+                    logger.Verbose=false;logger.Detail("hidden-again");logger.Flush();
+                    Assert(!ReadLog(file).Contains("hidden-again")&&normal.Any(x=>x.Contains("visible-warning")),"Toggle hid warning or retained detail");
+                }
+                string settings=File.ReadAllText(Path.Combine(args[3],"modsettings.json"));
+                Assert(settings.Contains("Verbose Logging"),"Verbose setting missing");
+            });
+            Test("Buffered diagnostics flush at checkpoints, warnings and bounded batches",()=>{
+                string dir=Path.Combine(fixtures,"LoggingBuffered"),file=Path.Combine(dir,"Logs/NeatFreaks/NF.log");
+                using(var logger=new SessionLog(dir,(l,m)=>{})) {
+                    logger.SetEnabled(true);logger.Write("INFO","pending-line");
+                    Assert(!ReadLog(file).Contains("pending-line"),"Routine line flushed immediately");
+                    logger.Flush();Assert(ReadLog(file).Contains("pending-line"),"Checkpoint lost line");
+                    logger.Write("INFO","before-warning");logger.Write("WARN","warning-checkpoint");
+                    Assert(ReadLog(file).Contains("before-warning")&&ReadLog(file).Contains("warning-checkpoint"),"Warning did not flush");
+                    for(int i=0;i<32;i++)logger.Write("INFO","batch-"+i);
+                    Assert(ReadLog(file).Contains("batch-31"),"Bounded batch did not flush");
+                    logger.Write("INFO","shutdown-tail");
+                }
+                Assert(ReadLog(file).Contains("shutdown-tail"),"Dispose lost buffered tail");
+            });
+            Test("Path validation cache is scan-local and never skips leaf checks",()=>{
+                string dir=Path.Combine(fixtures,"PathCache");Directory.CreateDirectory(dir);
+                string file=Path.Combine(dir,"one.png");File.WriteAllText(file,"fixture");
+                var paths=new HashSet<string>(StringComparer.Ordinal);
+                IconLibrary<int>.CheckNoLinks(file,paths);int count=paths.Count;
+                IconLibrary<int>.CheckNoLinks(file,paths);Assert(paths.Count==count&&paths.Contains(Path.GetFullPath(dir)),"Parent reuse changed membership");
+                string missing=Path.Combine(dir,"missing");IconLibrary<int>.CheckNoLinks(missing,paths);
+                Assert(!paths.Contains(missing),"Missing path was trusted");
+                IconLibrary<int>.CheckNoLinks(file);Assert(paths.Count==count,"Fresh read walk changed scan state");
+            });
+            Test("First activation rotates once, toggles append, next session rotates current",()=>{
+                string dir=Path.Combine(fixtures,"LoggingRotation"),path=Path.Combine(dir,"Logs/NeatFreaks");Directory.CreateDirectory(path);
+                string current=Path.Combine(path,"NF.log"),previous=Path.Combine(path,"NF-prev.log");File.WriteAllText(current,"prior session");File.WriteAllText(previous,"obsolete");
+                var normal=new List<string>();var logger=new SessionLog(dir,(l,m)=>normal.Add(l+":"+m));
+                logger.SetEnabled(true);logger.Write("INFO","first interval");logger.Write("WARN","actionable");
+                Assert(ReadLog(previous)=="prior session"&&ReadLog(current).Contains("first interval"),"Rotation failed");
+                logger.SetEnabled(true);logger.SetEnabled(false);logger.Write("INFO","must be absent");logger.SetEnabled(true);logger.Write("INFO","second interval");logger.Flush();
+                Assert(ReadLog(previous)=="prior session"&&ReadLog(current).Contains("first interval")&&ReadLog(current).Contains("second interval")&&!ReadLog(current).Contains("must be absent"),"Toggle rotated or wrote while disabled");
+                Assert(normal.Any(x=>x=="WARN:actionable"),"Enabled warnings missing from normal log");
+                logger.Dispose();string completed=ReadLog(current);logger.SetEnabled(true);logger.Write("INFO","late");logger.Dispose();
+                Assert(ReadLog(current)==completed,"Late callback reopened log");
+                using(var next=new SessionLog(dir,(l,m)=>{})){next.SetEnabled(true);Assert(ReadLog(previous)==completed,"Next session did not rotate");}
+            });
+            Test("Locked current/backup preserve current log and fail only once until toggle",()=>{
+                string dir=Path.Combine(fixtures,"LoggingLocked"),path=Path.Combine(dir,"Logs/NeatFreaks");Directory.CreateDirectory(path);
+                string current=Path.Combine(path,"NF.log"),previous=Path.Combine(path,"NF-prev.log");File.WriteAllText(current,"keep current");File.WriteAllText(previous,"keep previous");
+                var normal=new List<string>();using(var logger=new SessionLog(dir,(l,m)=>normal.Add(l+":"+m))) {
+                    using(var held=new FileStream(current,FileMode.Open,FileAccess.ReadWrite,FileShare.None)){
+                        logger.SetEnabled(true);logger.Write("INFO","fallback1");logger.Write("INFO","fallback2");
+                    }
+                    Assert(normal.Count(x=>x.Contains("Dedicated logging unavailable"))==1&&ReadLog(current)=="keep current"&&ReadLog(previous)=="keep previous","Locked current corrupted evidence or spammed");
+                    logger.SetEnabled(false);int n=normal.Count;logger.Write("INFO","disabled fallback");Assert(normal.Count==n,"Disabled fallback emitted INFO");
+                    using(var held=new FileStream(previous,FileMode.Open,FileAccess.ReadWrite,FileShare.None))logger.SetEnabled(true);
+                    Assert(ReadLog(current)=="keep current","Backup failure truncated current");
+                    logger.SetEnabled(false);logger.SetEnabled(true);logger.Write("INFO","recovered");logger.Flush();
+                    Assert(ReadLog(previous)=="keep current"&&ReadLog(current).Contains("recovered"),"Explicit retry failed");
+                }
+            });
+            Test("Real Harmony attaches image/opening hooks; fallback and foreign patches survive",()=>{
+                var target=typeof(ItemHelper).GetMethod("GetInventoryImage",new[]{typeof(DaggerfallUnityItem)});
+                var other=new Harmony("neatfreaks.tests.other");
+                other.Patch(target,prefix:new HarmonyMethod(typeof(Checks).GetMethod("OtherPrefix")));
+                try {
+                    InventoryPatch.Install();Assert(InventoryPatch.IsInstalled(),"Hook absent");
+                    var image=new ImageData{width=123};Assert(InventoryPatch.Prefix(null,ref image)&&image.width==123,"Fallback result overwritten");
+                    var paper=typeof(ItemHelper).GetMethod("GetItemImage",new[]{typeof(DaggerfallUnityItem),typeof(bool),typeof(bool),typeof(bool)});
+                    var open=typeof(DaggerfallWorkshop.Game.UserInterfaceWindows.DaggerfallInventoryWindow).GetMethod("OnPush",Type.EmptyTypes);
+                    Assert(open!=null && Harmony.GetPatchInfo(open).Prefixes.Any(x=>x.owner==InventoryPatch.Owner && x.PatchMethod.Name=="OnInventoryOpening"),"Inventory opening prefix installed");
+                    Assert(paper!=null,"Paperdoll method signature changed");var info=Harmony.GetPatchInfo(paper);
+                    Assert(info==null||!info.Owners.Contains(InventoryPatch.Owner),"Paperdoll patched");
+                    InventoryPatch.Remove();Assert(!InventoryPatch.IsInstalled(),"Owned hook retained");
+                    var openInfo=Harmony.GetPatchInfo(open);Assert(openInfo==null || !openInfo.Owners.Contains(InventoryPatch.Owner),"Opening hook removed");
+                    Assert(Harmony.GetPatchInfo(target).Owners.Contains("neatfreaks.tests.other"),"Foreign hook removed");
+                } finally { InventoryPatch.Remove();other.Unpatch(target,HarmonyPatchType.All,"neatfreaks.tests.other"); }
+            });
+            if(args.Length>4 && !string.IsNullOrEmpty(args[4])) Test("External artwork: crop preserves every visible palette pixel under every DFU dye",()=>{
+                string[] files=Directory.GetFiles(args[4],"*.png");
+                Assert(files.Length>0,"External pack empty");
+                foreach(string file in files) {
+                    var icon=PngIcon.Decode(File.ReadAllBytes(file),true,palette);
+                    byte[] before=(byte[])icon.Indexed.Data.Clone();var crop=IconLayout.Prepare(icon);
+                    Assert(before.SequenceEqual(icon.Indexed.Data),"External input mutated");
+                    foreach(var dye in dyes) {
+                        var a=Icons.ApplyDye(icon.Indexed,dye).Data;var b=Icons.ApplyDye(crop.Indexed,dye).Data;
+                        var ac=new int[256];var bc=new int[256];foreach(byte v in a)ac[v]++;foreach(byte v in b)bc[v]++;
+                        for(int i=1;i<256;i++)Assert(ac[i]==bc[i],"Visible colour changed: "+file);
+                    }
+                }
+                Console.WriteLine("External artwork checked: "+files.Length+" icons.");
+            });
+            if(args.Length>5 && !string.IsNullOrEmpty(args[5])) Test("Installed equipment auto-indexes with native processing and shared layout",()=>{
+                var messages=new List<string>();int renders=0;
+                var lib=new IconLibrary<int>(palette,(icon,dye)=>{
+                    Assert(icon.Indexed!=null,"Equipment did not index");
+                    var layout=Icons.PrepareForRender(icon,dye,messages.Add);
+                    Assert(layout.Width>0&&layout.Height>0,"Empty equipment layout");renders++;return 1;
+                },x=>{},messages.Add,messages.Add,LegacyEquipmentArchive);
+                lib.LoadManifest(args[5],InstalledManifest(args[5]));
+                Assert(renders==0,"Registration decoded equipment");
+                int requested=0;
+                foreach(string dir in Directory.GetDirectories(args[5])) {
+                    int archive=ArchiveSelection.ParseFolder(Path.GetFileName(dir));
+                    if(!LegacyEquipmentArchive(archive))continue;
+                    foreach(string file in Directory.GetFiles(dir)) {
+                        if(!file.EndsWith(".png",StringComparison.OrdinalIgnoreCase))continue;
+                        string[] parts=Path.GetFileNameWithoutExtension(file).Split('-');
+                        if(parts.Length!=2||parts[1]!="0")continue;
+                        int image;Assert(lib.TryGet(archive,int.Parse(parts[0]),dyes[0],out image,archive==432||archive==433),"Raw installed image failed: "+file);requested++;
+                    }
+                }
+                Assert(requested==lib.Count&&renders==requested,"Equipment registration/render count differs");
+                Assert(messages.Any(x=>x.Contains("target=WeaponsAndArmor"))&&messages.Any(x=>x.Contains("artifact retains")),"Native equipment paths missing");
+                Console.WriteLine("Installed native equipment icons checked: "+requested);
+            });
+            if(args.Length>5 && !string.IsNullOrEmpty(args[5])) Test("Installed manifest selects four archives without decoding equipment",()=>{
+                string json=InstalledManifest(args[5]);int profiles=0;
+                foreach(Races race in new[]{Races.Argonian,Races.DarkElf,Races.HighElf,Races.WoodElf,Races.Breton,Races.Nord,Races.Redguard,Races.Khajiit})
+                foreach(Genders gender in new[]{Genders.Female,Genders.Male}) {
+                    ArchiveSelection.Profile profile;Assert(ArchiveSelection.TryGetProfile(gender,race,out profile),"Profile resolves");
+                    var logs=new List<string>();int rendered=0;
+                    var lib=new IconLibrary<int>(palette,(icon,dye)=>++rendered,_=>{},logs.Add,null,profile.Includes);
+                    lib.LoadManifest(args[5],json);
+                    foreach(int id in new[]{profile.Clothing,profile.Weapons,profile.Artifacts,profile.Armor}) {
+                        string folder=Directory.GetDirectories(args[5]).Single(x=>ArchiveSelection.ParseFolder(Path.GetFileName(x))==id);
+                        Assert(lib.CountForArchive(id)==Directory.GetFiles(folder,"*.png").Length,"All selected filenames registered");
+                    }
+                    Assert(logs.Count==0 && rendered==0 && lib.CachedCount==0,"Discovery-only has no decoded/rendered payload");
+                    Console.WriteLine("Profile "+gender+" "+race+": "+profile+"; registered="+lib.Count);lib.Clear();profiles++;
+                }
+                Assert(profiles==16,"All vanilla race/gender profiles checked");
+            });
+            if(args.Length>5 && !string.IsNullOrEmpty(args[5])) Test("Installed RGBA pack auto-converts once per icon and renders real dyes",()=>{
+                var logs=new List<string>();var diagnostics=new List<string>();int renderCount=0,selectedArchive=-1;
+                var lib=new IconLibrary<int>(palette,(icon,dye)=>{
+                    var compact=Icons.PrepareForRender(icon,dye,diagnostics.Add);var dyed=compact.Indexed;
+                    Assert(dyed.Width==compact.Width && dyed.Height==compact.Height,"Native dye geometry");return ++renderCount;
+                },_=>{},logs.Add,diagnostics.Add,a=>a==selectedArchive);
+                string[] folders=Directory.GetDirectories(args[5]).Where(x=>{int id=ArchiveSelection.ParseFolder(Path.GetFileName(x));return id>=235 && id<=242;}).ToArray();
+                string allArchives=Manifest(folders.Select(x=>Archive(Path.GetFileName(x),"auto")).ToArray());
+                int count=0;
+                foreach(string folder in folders) {
+                  selectedArchive=ArchiveSelection.ParseFolder(Path.GetFileName(folder));lib.Clear();lib.LoadManifest(args[5],allArchives);
+                  foreach(string file in Directory.GetFiles(folder,"*.png")) {
+                    int archive=selectedArchive,record=int.Parse(Path.GetFileNameWithoutExtension(file).Split('-')[0]),result;
+                    var rgba=PngIcon.Decode(File.ReadAllBytes(file),false,palette);
+                    var indexed=AutoIndexer.Convert(rgba,palette,_=>{});
+                    var clean=ImageProcessing.ChangeMask(indexed.Indexed);
+                    int masks=0;
+                    for(int y=0;y<rgba.Height;y++)for(int x=0;x<rgba.Width;x++) {
+                        var c=rgba.FixedPixels[(rgba.Height-1-y)*rgba.Width+x];int q=y*rgba.Width+x;
+                        bool isMask=c.a>=128 && c.r==palette.GetRed(255) && c.g==palette.GetGreen(255) && c.b==palette.GetBlue(255);
+                        if(isMask)masks++;
+                        Assert((indexed.Indexed.Data[q]==255)==isMask,"Exact mask identity: "+file);
+                        Assert(clean.Data[q]==(isMask?0:indexed.Indexed.Data[q]),"Native mask pixel result");
+                    }
+                    if(archive==237 && record==32)Console.WriteLine("237:32 opaque mask pixels verified: "+masks);
+                    Assert(lib.TryGet(archive,record,DyeColors.Blue,out result),"RGBA auto load: "+file);
+                    Assert(lib.TryGet(archive,record,DyeColors.Red,out result),"RGBA second dye");
+                    Assert(lib.TryGet(archive,record,DyeColors.Blue,out result),"RGBA cached");count++;
+                }
+                }
+                Assert(logs.Count==0 && count>0,"No installed artwork failures");
+                Assert(diagnostics.Count(x=>x.Contains("Auto-index complete"))==count && renderCount==count*2,"One conversion per installed icon");
+                Console.WriteLine("Installed RGBA icons checked: "+count+"; no source files modified.");lib.Clear();
+            });
+            Console.WriteLine("PASS: "+scenarios+" scenarios; "+assertions+" assertions; 5 sprites x "+dyes.Length+" distinct DFU dyes.");
+            Console.WriteLine("Unity graphics, bootstrap coroutine, Mod Builder export and gameplay: NOT EXECUTED.");return 0;
+        } catch(Exception ex) { Console.Error.WriteLine(ex);return 1; }
+    }
+}
+
+

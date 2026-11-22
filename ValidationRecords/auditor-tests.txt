@@ -1,0 +1,1 @@
+PASS: shipped pack audit; layout logic unchanged; native material/artifact routes and katana lookup present. 406 installed equipment images covered by C# suite.

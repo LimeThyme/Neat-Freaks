@@ -1,0 +1,19 @@
+ManifestFileVersion: 0
+CRC: 2987891996
+Hashes:
+  AssetFileHash:
+    serializedVersion: 2
+    Hash: 7e9df1248e9281d8b0c3610ee0b5bf7a
+  TypeTreeHash:
+    serializedVersion: 2
+    Hash: 5ad585dd02dfb5016c0dad519eab8f49
+HashAppended: 0
+ClassTypes:
+- Class: 49
+  Script: {instanceID: 0}
+SerializeReferenceClassIdentifiers: []
+Assets:
+- Assets/Untracked/ModBuilder/Neat Freaks - 0.1.6/modsettings.json
+- Assets/Untracked/ModBuilder/Neat Freaks.dll.bytes
+- Assets/Untracked/ModBuilder/Neat Freaks - 0.1.6/neatfreaks.dfmod.json
+Dependencies: []

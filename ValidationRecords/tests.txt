@@ -1,0 +1,65 @@
+﻿PASS: Archive names preserve disk labels and reject ambiguous or unsafe names
+PASS: Race and gender map to DFU vanilla body archives
+PASS: Archive filter precedes IO/budget and rescan selects a new player archive
+PASS: Equipment profiles select correct gender and body archives
+PASS: Four-category discovery stays lazy and reload replaces selection
+PASS: Inventory-open trigger is safe before initialization and preserves selected caches
+PASS: Native equipment materials and artifact masks match DFU without mutating base
+PASS: Equipment modes honor manifests and material caches remain independent
+PASS: Auto indexing exact/nearest, alpha, orientation and reserved slots
+PASS: Exact mask black survives indexing then native ChangeMask removes it
+PASS: Auto bitmap passes through native DFU dye processing before layout
+PASS: Auto converts once across dyes; reload reconverts; legacy mask files ignored
+PASS: Layout crops indexed bounds without modifying source or dye slots
+PASS: Layout preserves RGBA alpha, colour and bottom-up orientation
+PASS: Authored plus-like pixels retain relative positions and affect bounds
+PASS: Shipped external pack parsed from disk through production FullSerializer loader
+PASS: Five shipped PNGs: real DFU dye table, transparency, immutable base; all distinct dyes
+PASS: Every PNG filter, multiple IDAT, indexed slot identity
+PASS: Fixed RGB/RGBA/palette preserve colour, alpha and bottom-up orientation
+PASS: PNG rejects truncation, CRC, Adler, inflated size, bad filter, bitdepth, interlace, oversize
+PASS: Indexed mode rejects reordered palette, wrong alpha, mask255 and RGBA
+PASS: Schema 3 logs distinguish settings from indexed and unchanged outcomes
+PASS: Schema 3 boolean forms, author-selected targets and invalid entries
+PASS: No conversion preserves compatible slots, mask255 and arbitrary PNG colours
+PASS: Schema 3 parses folder manifests and rejects old/invalid schemas
+PASS: Folder selection, numeric naming and nonzero frame rejection are isolated
+PASS: Multiple archives, lazy PNG reads, per-dye cache and fixed sharing
+PASS: Missing/corrupt PNG and renderer failures log once; valid neighbour continues
+PASS: Reload discovers new PNG, retries repair and releases cached result once
+PASS: Sorted packs, duplicate first-wins, malformed pack and missing root
+PASS: Actual DFU settings toggle defaults off and build manifest includes it
+PASS: Disabled logging leaves files untouched while warnings reach normal log
+PASS: Stage timings distinguish lazy scan from first-use image work
+PASS: Normal and verbose modes preserve warnings and respect master switch
+PASS: Buffered diagnostics flush at checkpoints, warnings and bounded batches
+PASS: Path validation cache is scan-local and never skips leaf checks
+PASS: First activation rotates once, toggles append, next session rotates current
+PASS: Locked current/backup preserve current log and fail only once until toggle
+PASS: Real Harmony attaches image/opening hooks; fallback and foreign patches survive
+External artwork checked: 108 icons.
+PASS: External artwork: crop preserves every visible palette pixel under every DFU dye
+Installed native equipment icons checked: 406
+PASS: Installed equipment auto-indexes with native processing and shared layout
+Profile Female Argonian: clothing=235; weapons=233; artifacts=433; armor=245; registered=200
+Profile Male Argonian: clothing=239; weapons=234; artifacts=432; armor=249; registered=200
+Profile Female DarkElf: clothing=236; weapons=233; artifacts=433; armor=246; registered=200
+Profile Male DarkElf: clothing=240; weapons=234; artifacts=432; armor=250; registered=200
+Profile Female HighElf: clothing=236; weapons=233; artifacts=433; armor=246; registered=200
+Profile Male HighElf: clothing=240; weapons=234; artifacts=432; armor=250; registered=200
+Profile Female WoodElf: clothing=236; weapons=233; artifacts=433; armor=246; registered=200
+Profile Male WoodElf: clothing=240; weapons=234; artifacts=432; armor=250; registered=200
+Profile Female Breton: clothing=237; weapons=233; artifacts=433; armor=247; registered=200
+Profile Male Breton: clothing=241; weapons=234; artifacts=432; armor=251; registered=200
+Profile Female Nord: clothing=237; weapons=233; artifacts=433; armor=247; registered=200
+Profile Male Nord: clothing=241; weapons=234; artifacts=432; armor=251; registered=200
+Profile Female Redguard: clothing=237; weapons=233; artifacts=433; armor=247; registered=200
+Profile Male Redguard: clothing=241; weapons=234; artifacts=432; armor=251; registered=200
+Profile Female Khajiit: clothing=238; weapons=233; artifacts=433; armor=248; registered=200
+Profile Male Khajiit: clothing=242; weapons=234; artifacts=432; armor=252; registered=200
+PASS: Installed manifest selects four archives without decoding equipment
+237:32 opaque mask pixels verified: 1261
+Installed RGBA icons checked: 864; no source files modified.
+PASS: Installed RGBA pack auto-converts once per icon and renders real dyes
+PASS: 43 scenarios; 8264675 assertions; 5 sprites x 20 distinct DFU dyes.
+Unity graphics, bootstrap coroutine, Mod Builder export and gameplay: NOT EXECUTED.

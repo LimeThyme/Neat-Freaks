@@ -1,0 +1,9 @@
+{
+  "profiles": 16,
+  "clothing": 108,
+  "weapons": 28,
+  "artifacts": 27,
+  "armor": 37,
+  "total_each": 200,
+  "renderer_calls_during_discovery": 0
+}
