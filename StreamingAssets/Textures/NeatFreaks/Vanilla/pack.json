@@ -1,0 +1,105 @@
+{
+  "schemaVersion": 3,
+  "archives": [
+    {
+      "folder": "233-(Female Weapons)",
+      "auto-indexing enabled": true,
+      "palette-processing type": "equipment"
+    },
+	{
+      "folder": "234-(Male Weapons)",
+      "auto-indexing enabled": true,
+      "palette-processing type": "equipment"
+    },
+	{
+      "folder": "235-(Female Argonian Clothing)",
+      "auto-indexing enabled": true,
+      "palette-processing type": "clothing"
+    },
+    {
+      "folder": "236-(Female Elven Clothing)",
+      "auto-indexing enabled": true,
+      "palette-processing type": "clothing"
+    },
+    {
+      "folder": "237-(Female Human Clothing)",
+      "auto-indexing enabled": true,
+      "palette-processing type": "clothing"
+    },
+    {
+      "folder": "238-(Female Khajiiti Clothing)",
+      "auto-indexing enabled": true,
+      "palette-processing type": "clothing"
+    },
+    {
+      "folder": "239-(Male Argonian Clothing)",
+      "auto-indexing enabled": true,
+      "palette-processing type": "clothing"
+    },
+    {
+      "folder": "240-(Male Elven Clothing)",
+      "auto-indexing enabled": true,
+      "palette-processing type": "clothing"
+    },
+    {
+      "folder": "241-(Male Human Clothing)",
+      "auto-indexing enabled": true,
+      "palette-processing type": "clothing"
+    },
+    {
+      "folder": "242-(Male Khajiiti Clothing)",
+      "auto-indexing enabled": true,
+      "palette-processing type": "clothing"
+    },
+	{
+      "folder": "245-(Female Argonian Armor)",
+      "auto-indexing enabled": true,
+      "palette-processing type": "equipment"
+    },
+	{
+      "folder": "246-(Female Elven Armor)",
+      "auto-indexing enabled": true,
+      "palette-processing type": "equipment"
+    },
+	{
+      "folder": "247-(Female Human Armor)",
+      "auto-indexing enabled": true,
+      "palette-processing type": "equipment"
+    },
+	{
+      "folder": "248-(Female Khajiiti Armor)",
+      "auto-indexing enabled": true,
+      "palette-processing type": "equipment"
+    },
+	{
+      "folder": "249-(Male Argonian Armor)",
+      "auto-indexing enabled": true,
+      "palette-processing type": "equipment"
+    },
+	{
+      "folder": "250-(Male Elven Armor)",
+      "auto-indexing enabled": true,
+      "palette-processing type": "equipment"
+    },
+	{
+      "folder": "251-(Male Human Armor)",
+      "auto-indexing enabled": true,
+      "palette-processing type": "equipment"
+    },
+	{
+      "folder": "252-(Male Khajiiti Armor)",
+      "auto-indexing enabled": true,
+      "palette-processing type": "equipment"
+    },
+	{
+      "folder": "432-(Male Artifacts)",
+      "auto-indexing enabled": true,
+      "palette-processing type": "equipment"
+    },
+	{
+      "folder": "433-(Female Artifacts)",
+      "auto-indexing enabled": true,
+      "palette-processing type": "equipment"
+    }
+  ]
+}
