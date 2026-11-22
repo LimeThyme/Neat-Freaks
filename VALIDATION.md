@@ -24,6 +24,6 @@ live verification. Offline tests do not claim measured frame-time improvement.
 ## Logging terminology regression
 
 Four combinations of conversion on/off and indexed/RGBA source verify that settings
-use schema 3 names, source outcomes are explicit, and no mode= field appears in the
+use schema 3 names, source outcomes are explicit, and no `mode=` field appears in the
 runtime diagnostic stream. Existing 108 indexed, 864 clothing and 406 equipment
 image checks still pass. Live readability and graphics remain an in-game check.
